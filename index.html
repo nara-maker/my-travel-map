@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#fff">
+<title>My Travel Map</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
+<style>
+html,body,#map{margin:0;width:100%;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif}#map{position:fixed;inset:0}
+.toolbar{position:fixed;z-index:10;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;gap:8px;flex-wrap:wrap}
+button{border:0;border-radius:12px;padding:10px 13px;background:#fff;box-shadow:0 2px 10px #0003;font-size:14px;font-weight:700}
+.primary{background:#1769e0;color:#fff}.danger{background:#fff1f1;color:#b42318}
+#mapStatus{position:fixed;z-index:20;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;padding:14px 18px;border-radius:12px;box-shadow:0 3px 16px #0003;min-width:210px;text-align:center}
+#mapStatus small{display:block;color:#666;margin-top:4px;font-weight:400}
+.panel{display:none;position:fixed;z-index:30;left:0;right:0;bottom:0;background:#fff;border-radius:20px 20px 0 0;box-shadow:0 -4px 18px #0003;padding:16px;max-height:82vh;overflow:auto}
+.panel.show{display:block}.row{display:flex;gap:8px}.row>*{flex:1}.title{margin:0;font-size:20px}.space{height:8px}input,textarea{width:100%;padding:11px;border:1px solid #ddd;border-radius:10px;font-size:16px}textarea{min-height:90px}.photos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.photos img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px}.muted{font-size:12px;color:#666}
+.viewer{display:none;position:fixed;z-index:100;inset:0;background:#000e;align-items:center;justify-content:center}.viewer.show{display:flex}.viewer img{max-width:96vw;max-height:90vh;object-fit:contain}.viewer button{position:absolute;right:14px;top:max(14px,env(safe-area-inset-top))}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="mapStatus">🗺️ 地図を読み込んでいます…<small id="mapStatusDetail">地図エンジンを起動しています</small></div>
+<div class="toolbar">
+  <button id="addPinBtn">＋ ピンを追加</button>
+  <button id="routeBtn" class="primary">🛣️ 旅行のルートを作成</button>
+  <button id="viewRouteBtn">🗺️ 旅行ルートを参照</button>
+</div>
+
+<div id="pinPanel" class="panel"><div class="row"><h2 class="title" id="pinPanelTitle">ピンを追加</h2><button id="closePinBtn">閉じる</button></div><div class="space"></div><label>場所の名前</label><div class="space"></div><input id="pinName"><div class="space"></div><label>メモ</label><div class="space"></div><textarea id="pinMemo"></textarea><div class="space"></div><label>訪問日</label><div class="space"></div><input id="pinDate" type="date"><div class="space"></div><label>写真</label><div class="space"></div><div id="pinPhotos" class="photos"></div><div class="space"></div><input id="photoInput" type="file" accept="image/*" multiple><div class="space"></div><div class="row"><button id="cancelPinBtn">キャンセル</button><button id="savePinBtn" class="primary">保存</button></div></div>
+<div id="detailPanel" class="panel"><div class="row"><h2 class="title" id="detailTitle"></h2><button id="closeDetailBtn">閉じる</button></div><div id="detailBody"></div><div class="space"></div><div class="row"><button id="editPinBtn" class="primary">✏️ 編集</button><button id="deletePinBtn" class="danger">削除</button></div></div>
+<div id="routePanel" class="panel"><div class="row"><h2 class="title">旅行のルートを作成</h2><button id="closeRouteBtn">閉じる</button></div><p class="muted">ルート作成機能は次段階で追加します。まず地図表示を安定させます。</p></div>
+<div id="viewer" class="viewer"><button id="closeViewerBtn">閉じる</button><img id="viewerImg"></div>
+
+<script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
+<script>
+(function(){
+  'use strict';
+  const DB_NAME='MyTravelMapDB', DB_VERSION=2;
+  let db=null, map=null, pins=[], editingId=null, selectedId=null;
+  const $=id=>document.getElementById(id);
+  const els={map:$('map'),status:$('mapStatus'),statusDetail:$('mapStatusDetail'),addPin:$('addPinBtn'),route:$('routeBtn'),viewRoute:$('viewRouteBtn'),pinPanel:$('pinPanel'),pinTitle:$('pinPanelTitle'),pinName:$('pinName'),pinMemo:$('pinMemo'),pinDate:$('pinDate'),pinPhotos:$('pinPhotos'),photoInput:$('photoInput'),savePin:$('savePinBtn'),cancelPin:$('cancelPinBtn'),closePin:$('closePinBtn'),detail:$('detailPanel'),detailTitle:$('detailTitle'),detailBody:$('detailBody'),editPin:$('editPinBtn'),deletePin:$('deletePinBtn'),viewer:$('viewer'),viewerImg:$('viewerImg')};
+  function status(main,detail){els.status.style.display='block';els.status.firstChild.textContent=main;els.statusDetail.textContent=detail||'';}
+  function done(){els.status.innerHTML='✓ 地図の読み込み完了';setTimeout(()=>els.status.style.display='none',800)}
+  function esc(v){return String(v||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+  function openDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains('pins'))d.createObjectStore('pins',{keyPath:'id'});if(!d.objectStoreNames.contains('routes'))d.createObjectStore('routes',{keyPath:'id'})};r.onsuccess=()=>{db=r.result;resolve()};r.onerror=()=>reject(r.error)})}
+  function getAll(store){return new Promise((resolve,reject)=>{if(!db)return resolve([]);const r=db.transaction(store).objectStore(store).getAll();r.onsuccess=()=>resolve(r.result||[]);r.onerror=()=>reject(r.error)})}
+  function put(store,obj){return new Promise((resolve,reject)=>{const r=db.transaction(store,'readwrite').objectStore(store).put(obj);r.onsuccess=resolve;r.onerror=()=>reject(r.error)})}
+  function del(store,id){return new Promise((resolve,reject)=>{const r=db.transaction(store,'readwrite').objectStore(store).delete(id);r.onsuccess=resolve;r.onerror=()=>reject(r.error)})}
+  function dataURL(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file)})}
+  function closePanels(){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('show'))}
+  function addMarker(p){if(p.marker)p.marker.remove();const el=document.createElement('div');el.style.cssText='width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#d1242f;border:3px solid #fff;box-shadow:0 2px 8px #0005;cursor:pointer';el.innerHTML='<span style="display:block;transform:rotate(45deg);text-align:center;line-height:24px;color:#fff">•</span>';el.addEventListener('click',e=>{e.stopPropagation();openDetail(p.id)});p.marker=new maplibregl.Marker({element:el}).setLngLat(p.coord).addTo(map)}
+  function renderPins(){pins.forEach(addMarker)}
+  function openEditor(id,coord){editingId=id;selectedId=id;const p=id?pins.find(x=>x.id===id):null;els.pinTitle.textContent=id?'ピンを編集':'ピンを追加';els.pinName.value=p?.name||'';els.pinMemo.value=p?.memo||'';els.pinDate.value=p?.date||'';els.photoInput.value='';els.pinPhotos.innerHTML=(p?.photos||[]).map(src=>'<img src="'+src+'">').join('');els.pinPhotos.querySelectorAll('img').forEach(i=>i.addEventListener('click',()=>openViewer(i.src)));if(!id)editingId=null;els.pinPanel.classList.add('show');if(!p && coord)selectedId=coord}
+  async function savePin(){let p=editingId?pins.find(x=>x.id===editingId):null;if(!p){const c=Array.isArray(selectedId)?selectedId:map.getCenter().toArray();p={id:crypto.randomUUID(),coord:c,photos:[]};pins.push(p)}p.name=els.pinName.value.trim()||'名称未設定';p.memo=els.pinMemo.value;p.date=els.pinDate.value;for(const f of els.photoInput.files)p.photos.push(await dataURL(f));await put('pins',p);addMarker(p);closePanels();editingId=null}
+  function openDetail(id){const p=pins.find(x=>x.id===id);if(!p)return;selectedId=id;els.detailTitle.textContent='📍 '+p.name;els.detailBody.innerHTML='<div class="muted">'+esc(p.date)+'</div><p>'+esc(p.memo)+'</p><div class="photos">'+(p.photos||[]).map(s=>'<img src="'+s+'">').join('')+'</div>';els.detailBody.querySelectorAll('img').forEach(i=>i.addEventListener('click',()=>openViewer(i.src)));closePanels();els.detail.classList.add('show')}
+  function openViewer(src){els.viewerImg.src=src;els.viewer.classList.add('show')}
+  els.addPin.addEventListener('click',()=>openEditor(null,map.getCenter().toArray()));
+  els.savePin.addEventListener('click',savePin);els.cancelPin.addEventListener('click',closePanels);els.closePin.addEventListener('click',closePanels);$('closeDetailBtn').addEventListener('click',closePanels);
+  els.editPin.addEventListener('click',()=>{const id=selectedId;closePanels();openEditor(id)});
+  els.deletePin.addEventListener('click',async()=>{if(!selectedId||Array.isArray(selectedId))return;if(confirm('このピンを削除しますか？')){await del('pins',selectedId);const p=pins.find(x=>x.id===selectedId);if(p?.marker)p.marker.remove();pins=pins.filter(x=>x.id!==selectedId);closePanels()}});
+  $('closeViewerBtn').addEventListener('click',()=>els.viewer.classList.remove('show'));
+  els.route.addEventListener('click',()=>els.routePanel.classList.add('show'));$('closeRouteBtn').addEventListener('click',closePanels);
+  els.viewRoute.addEventListener('click',()=>alert('旅行ルート参照は地図安定化後に実装します。'));
+
+  function startMap(){
+    if(typeof window.maplibregl==='undefined'){status('⚠ 地図エンジンを読み込めませんでした','CDNに接続できていません。インターネット接続を確認してください。');return}
+    status('🗺️ 地図を読み込んでいます…','MapLibreを起動しています');
+    try{
+      map=new window.maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/liberty',center:[135.76,35.01],zoom:5.2,attributionControl:true});
+      map.addControl(new window.maplibregl.NavigationControl(),'bottom-right');
+      let n=0;
+      map.on('dataloading',()=>{status('🗺️ 地図を読み込んでいます…','データを取得中')});
+      map.on('sourcedataloading',()=>{n++;status('🗺️ 地図を読み込んでいます…','受信 '+n+' 回目の地図データ')});
+      map.on('error',e=>{console.error('MapLibre error',e);status('⚠ 地図の読み込みに失敗しました','OpenFreeMapへの接続を確認してください')});
+      map.once('load',()=>{status('🗺️ 地図を表示しています…','描画中');renderPins();setTimeout(done,500)});
+    }catch(e){console.error(e);status('⚠ 地図を開始できませんでした',String(e.message||e))}
+  }
+  window.addEventListener('error',e=>{console.error('Global error',e.error||e.message);if(!map)status('⚠ アプリの起動でエラーが発生しました',String(e.message||''))});
+  window.addEventListener('load',()=>{startMap();openDB().then(()=>getAll('pins')).then(v=>{pins=v||[];if(map&&map.isStyleLoaded())renderPins()}).catch(e=>console.warn('DB load',e))});
+})();
+</script>
+</body>
+</html>
