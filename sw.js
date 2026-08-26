@@ -1,1 +1,0 @@
-const CACHE='my-travel-map-v7';self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.clients.claim()));
