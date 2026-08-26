@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#ffffff">
+<title>My Travel Map</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.css">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;background:#fff;color:#222}
+#map{position:fixed;inset:0}
+.toolbar{position:fixed;z-index:20;top:max(10px,env(safe-area-inset-top));left:10px;right:10px;display:flex;gap:8px;flex-wrap:wrap}
+button{border:0;border-radius:12px;padding:10px 13px;background:#fff;box-shadow:0 2px 10px #0003;font-size:14px;font-weight:700}
+button.primary{background:#1769e0;color:#fff}.danger{background:#fff1f1;color:#b42318}
+.panel{display:none;position:fixed;z-index:30;left:0;right:0;bottom:0;background:#fff;border-radius:20px 20px 0 0;box-shadow:0 -4px 18px #0003;padding:16px 16px calc(18px + env(safe-area-inset-bottom));max-height:82vh;overflow:auto}
+.panel.show{display:block}.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.title{margin:0;font-size:20px}.space{height:8px}
+input,textarea,select{width:100%;padding:11px;border:1px solid #ddd;border-radius:10px;font-size:16px;background:#fafafa}textarea{min-height:90px}
+.photos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.photos img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px}
+.muted{font-size:12px;color:#666}.item{display:flex;gap:8px;align-items:center;padding:10px;border:1px solid #eee;border-radius:12px;margin:7px 0;background:#fff}
+.item .grow{flex:1}.drag-handle{font-size:22px;color:#777;cursor:grab;touch-action:none}.badge{display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;background:#eee}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin:8px 0}.legend span{display:flex;align-items:center;gap:5px}.sw{width:18px;height:4px;border-radius:4px;display:inline-block}
+.viewer{display:none;position:fixed;z-index:100;inset:0;background:#000e;align-items:center;justify-content:center}.viewer.show{display:flex}.viewer img{max-width:96vw;max-height:90vh;object-fit:contain}.viewer button{position:absolute;right:14px;top:max(14px,env(safe-area-inset-top))}
+.route-draw-banner{display:none;position:fixed;z-index:25;top:calc(58px + env(safe-area-inset-top));left:8px;right:8px;transform:none;background:#000c;color:#fff;border-radius:14px;padding:7px 8px;font-size:12px;white-space:normal;text-align:center}.route-draw-banner button{margin:4px 2px 0;padding:7px 9px;font-size:12px;box-shadow:none}
+.route-draw-banner.show{display:block}
+#drawCanvas{position:fixed;inset:0;z-index:15;display:none;touch-action:none}
+#drawCanvas.show{display:block}
+.route-current{padding:9px;border-radius:10px;background:#f6f7f9;margin:8px 0}
+#pinCrosshair{display:none;position:fixed;z-index:18;left:50%;top:50%;width:30px;height:30px;transform:translate(-50%,-50%);pointer-events:none;opacity:1}
+#pinCrosshair.show{display:block}
+#pinCrosshair:before,#pinCrosshair:after{content:"";position:absolute;left:50%;top:50%;background:#666;border-radius:2px;transform:translate(-50%,-50%)}
+#pinCrosshair:before{width:30px;height:2px}#pinCrosshair:after{height:30px;width:2px}
+#pinCrosshair .dot{position:absolute;left:50%;top:50%;width:7px;height:7px;border:2px solid #666;border-radius:50%;background:#fff;transform:translate(-50%,-50%)}
+.placement-note{padding:8px 10px;border-radius:10px;background:#f2f4f7;color:#555;font-size:12px;margin:8px 0}.placement-actions{margin-top:10px}.toolbar.route-adding #routeBtn{display:none}
+.empty{padding:18px;text-align:center;color:#777;background:#f7f7f8;border-radius:12px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="pinCrosshair" aria-hidden="true"><span class="dot"></span></div>
+<canvas id="drawCanvas"></canvas>
+
+<div class="toolbar">
+  <button id="addPinBtn">＋ ピンを追加</button>
+  <button id="routeBtn" class="primary">🛣️ 旅行のルートを作成</button>
+  <button id="viewRouteBtn">🗺️ 旅行ルートを参照</button>
+</div>
+<div id="drawBanner" class="route-draw-banner"><div id="drawGuide">描画ON：一本指で道筋を描きます</div><button id="drawToggleBtn">⏸ 描画OFF</button><button id="drawUndoBtn">↩ 一つ戻す</button><button id="drawFinishBtn" class="primary">完了</button><button id="drawCancelBtn">取消</button></div>
+
+<div id="pinPanel" class="panel">
+  <div class="row"><h2 class="title" id="pinPanelTitle">ピンを追加</h2><button id="closePinBtn">閉じる</button></div>
+  <div id="pinPlacementSection">
+    <div id="pinPlacementNote" class="placement-note">地図の中央にある十字がピンを置く位置です。地図をタップして位置を選び、「この位置に決定」を押してください。</div>
+    <div class="space"></div>
+    <div class="row placement-actions"><button id="cancelPlacementBtn">キャンセル</button><button id="confirmPlacementBtn" class="primary">この位置に決定</button></div>
+  </div>
+  <div id="pinEditorSection" style="display:none">
+    <div class="placement-note">位置が決まりました。名前・メモ・写真などを入力してください。</div>
+    <div class="space"></div>
+    <label>場所の名前</label><div class="space"></div><input id="pinName" placeholder="例：清水寺">
+    <div class="space"></div><label>メモ</label><div class="space"></div><textarea id="pinMemo" placeholder="旅の思い出など"></textarea>
+    <div class="space"></div><label>訪問日</label><div class="space"></div><input id="pinDate" type="date">
+    <div class="space"></div><label>写真</label><div class="space"></div><div id="pinPhotos" class="photos"></div>
+    <div class="space"></div><input id="photoInput" type="file" accept="image/*" multiple>
+    <div class="space"></div><div class="row"><button id="cancelPinBtn">キャンセル</button><button id="savePinBtn" class="primary">保存</button></div>
+  </div>
+</div>
+
+<div id="detailPanel" class="panel">
+  <div class="row"><h2 class="title" id="detailTitle"></h2><button id="closeDetailBtn">閉じる</button></div>
+  <div id="detailBody"></div>
+  <div class="space"></div><div class="row"><button id="editPinBtn" class="primary">✏️ 編集</button><button id="deletePinBtn" class="danger">削除</button></div>
+</div>
+
+<div id="routePanel" class="panel">
+  <div class="row"><h2 class="title">旅行のルートを作成</h2><button id="closeRouteBtn">閉じる</button></div>
+  <div class="space"></div>
+  <label>旅行の名前</label><div class="space"></div><input id="routeName" placeholder="例：2026年 京都旅行">
+  <div class="space"></div>
+  <div id="routeCurrent" class="route-current muted">「＋追加」からピンまたは道筋を追加してください。</div>
+  <div class="row"><button id="addRouteItemBtn" class="primary">＋ 追加</button><button id="undoBtn">↩ 一つ戻す</button><button id="saveRouteBtn" class="primary">保存</button></div>
+  <div class="section-title" style="margin-top:14px;font-weight:800">行程</div>
+  <div id="routeItems"></div>
+  <div class="section-title" style="margin-top:14px;font-weight:800">交通手段</div>
+  <div class="legend">
+    <span><i class="sw" style="background:#16a34a"></i>徒歩</span>
+    <span><i class="sw" style="background:#2563eb"></i>バス</span>
+    <span><i class="sw" style="background:#dc2626"></i>電車</span>
+    <span><i class="sw" style="background:#f59e0b"></i>車</span>
+  </div>
+</div>
+
+<div id="addChoicePanel" class="panel">
+  <div class="row"><h2 class="title">追加</h2><button id="closeChoiceBtn">閉じる</button></div>
+  <div class="space"></div>
+  <button id="choosePinBtn" style="width:100%">📍 ピンを追加</button>
+  <div class="space"></div>
+  <button id="choosePathBtn" style="width:100%">✏️ 道筋を描く</button>
+</div>
+
+<div id="routesPanel" class="panel">
+  <div class="row"><h2 class="title">旅行ルートを参照</h2><button id="closeRoutesBtn">閉じる</button></div>
+  <div id="routesList"></div>
+</div>
+
+<div id="routeViewPanel" class="panel">
+  <div class="row"><h2 class="title" id="routeViewTitle">旅行</h2><button id="closeRouteViewBtn">閉じる</button></div>
+  <div id="routeViewBody"></div>
+</div>
+
+<div id="viewer" class="viewer"><button id="closeViewerBtn">閉じる</button><img id="viewerImg"></div>
+
+<script src="https://unpkg.com/maplibre-gl@5.6.1/dist/maplibre-gl.js"></script>
+<script>
+(() => {
+'use strict';
+
+const DB_NAME='MyTravelMapDB', DB_VERSION=3;
+const MODE={
+  walk:{label:'徒歩',icon:'🚶',color:'#16a34a'},
+  bus:{label:'バス',icon:'🚌',color:'#2563eb'},
+  train:{label:'電車',icon:'🚃',color:'#dc2626'},
+  car:{label:'車',icon:'🚗',color:'#f59e0b'}
+};
+let db=null, map=null, pins=[], routes=[];
+let selectedPinId=null, editingPinId=null, currentRoute=null;
+let routeMode=false, routePinPick=false, drawing=false, drawPoints=[], drawSegments=[], drawPaused=false;
+let pinPlacement=false, placementCoord=null, pendingRoutePin=false, addInProgress=false;
+let routeGeoReady=false, tempLayerId='temp-draw';
+
+const $=id=>document.getElementById(id);
+const els={
+  addPin:$('addPinBtn'), route:$('routeBtn'), viewRoute:$('viewRouteBtn'),
+  pinPanel:$('pinPanel'), pinTitle:$('pinPanelTitle'), pinName:$('pinName'), pinMemo:$('pinMemo'),
+  pinDate:$('pinDate'), pinPhotos:$('pinPhotos'), photoInput:$('photoInput'), savePin:$('savePinBtn'),
+  cancelPin:$('cancelPinBtn'), closePin:$('closePinBtn'), detail:$('detailPanel'),
+  detailTitle:$('detailTitle'), detailBody:$('detailBody'), editPin:$('editPinBtn'),
+  deletePin:$('deletePinBtn'), closeDetail:$('closeDetailBtn'), viewer:$('viewer'),
+  viewerImg:$('viewerImg'), closeViewer:$('closeViewerBtn'),
+  placementSection:$('pinPlacementSection'), editorSection:$('pinEditorSection'), confirmPlacement:$('confirmPlacementBtn'), cancelPlacement:$('cancelPlacementBtn'), routePanel:$('routePanel'),
+  closeRoute:$('closeRouteBtn'), routeName:$('routeName'), routeCurrent:$('routeCurrent'),
+  addRoute:$('addRouteItemBtn'), undo:$('undoBtn'), saveRoute:$('saveRouteBtn'),
+  routeItems:$('routeItems'), choice:$('addChoicePanel'), closeChoice:$('closeChoiceBtn'),
+  choosePin:$('choosePinBtn'), choosePath:$('choosePathBtn'), routesPanel:$('routesPanel'),
+  closeRoutes:$('closeRoutesBtn'), routesList:$('routesList'), routeView:$('routeViewPanel'),
+  routeViewTitle:$('routeViewTitle'), routeViewBody:$('routeViewBody'), closeRouteView:$('closeRouteViewBtn'),
+  banner:$('drawBanner'), canvas:$('drawCanvas'), crosshair:$('pinCrosshair'), placementNote:$('pinPlacementNote')
+};
+
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function uid(){return crypto.randomUUID();}
+function closePanels(){document.querySelectorAll('.panel').forEach(p=>p.classList.remove('show'));}
+
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    const r=indexedDB.open(DB_NAME,DB_VERSION);
+    r.onupgradeneeded=e=>{
+      const d=e.target.result;
+      if(!d.objectStoreNames.contains('pins')) d.createObjectStore('pins',{keyPath:'id'});
+      if(!d.objectStoreNames.contains('routes')) d.createObjectStore('routes',{keyPath:'id'});
+    };
+    r.onsuccess=()=>{db=r.result;resolve();};
+    r.onerror=()=>reject(r.error);
+  });
+}
+function all(store){return new Promise((res,rej)=>{const r=db.transaction(store).objectStore(store).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error);});}
+function put(store,obj){return new Promise((res,rej)=>{const r=db.transaction(store,'readwrite').objectStore(store).put(obj);r.onsuccess=res;r.onerror=()=>rej(r.error);});}
+function del(store,id){return new Promise((res,rej)=>{const r=db.transaction(store,'readwrite').objectStore(store).delete(id);r.onsuccess=res;r.onerror=()=>rej(r.error);});}
+function dataURL(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});}
+
+function addPinMarker(p){
+  if(!map) return;
+  if(p.marker) p.marker.remove();
+  const el=document.createElement('div');
+  el.style.cssText='width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#d1242f;border:3px solid #fff;box-shadow:0 2px 8px #0005;cursor:pointer';
+  el.innerHTML='<span style="display:block;transform:rotate(45deg);text-align:center;line-height:24px;color:#fff">•</span>';
+  el.addEventListener('click',e=>{e.stopPropagation();openDetail(p.id);});
+  p.marker=new maplibregl.Marker({element:el}).setLngLat(p.coord).addTo(map);
+}
+function renderPins(){pins.forEach(addPinMarker);}
+
+function addRouteLayers(){
+  if(map.getSource('routeLines')) return;
+  map.addSource('routeLines',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+  map.addLayer({
+    id:'routeLines',
+    type:'line',
+    source:'routeLines',
+    layout:{'line-cap':'round','line-join':'round'},
+    paint:{'line-color':['get','color'],'line-width':5,'line-opacity':0.92}
+  });
+  routeGeoReady=true;
+}
+function renderRouteLines(){
+  if(!map || !routeGeoReady) return;
+  const features=[];
+  for(const route of routes){
+    for(const item of (route.items||[])){
+      if(item.type==='path' && item.points?.length>1){
+        features.push({
+          type:'Feature',
+          properties:{color:MODE[item.mode]?.color || '#666'},
+          geometry:{type:'LineString',coordinates:item.points}
+        });
+      }
+    }
+  }
+  if(currentRoute?.items){
+    for(const item of currentRoute.items){
+      if(item.type==='path' && item.points?.length>1){
+        features.push({
+          type:'Feature',
+          properties:{color:MODE[item.mode]?.color || '#666'},
+          geometry:{type:'LineString',coordinates:item.points}
+        });
+      }
+    }
+  }
+  map.getSource('routeLines').setData({type:'FeatureCollection',features});
+}
+
+function showPinCrosshair(show){
+  pinPlacement=show;
+  els.crosshair.classList.toggle('show',show);
+}
+function beginPinPlacement(coord, isRoute=false){
+  pendingRoutePin=isRoute;
+  placementCoord=coord ? coord.slice() : map.getCenter().toArray();
+  showPinCrosshair(true);
+}
+function updatePlacementCoord(coord){
+  if(!coord)return;
+  placementCoord=coord.slice();
+}
+function finishPinPlacement(){
+  showPinCrosshair(false);
+  placementCoord=null;
+  pendingRoutePin=false;
+}
+
+function openEditor(id,coord,isRoutePin=false){
+  editingPinId=id||null;
+  const p=id?pins.find(x=>x.id===id):null;
+  els.pinTitle.textContent=id?'ピンを編集':(isRoutePin?'旅行ルートのピンを追加':'ピンを追加');
+  els.pinName.value=p?.name||'';
+  els.pinMemo.value=p?.memo||'';
+  els.pinDate.value=p?.date||'';
+  els.photoInput.value='';
+  els.pinPhotos.innerHTML=(p?.photos||[]).map(s=>`<img src="${s}" alt="">`).join('');
+  els.pinPhotos.querySelectorAll('img').forEach(img=>img.onclick=()=>openViewer(img.src));
+
+  if(!id){
+    beginPinPlacement(coord || map.getCenter().toArray(), isRoutePin);
+    els.placementNote.textContent=isRoutePin
+      ? '旅行ルートのピンです。地図の中央にある十字がピンの位置です。地図をタップして位置を選び、「この位置に決定」を押してください。'
+      : '地図の中央にある十字がピンの位置です。地図をタップして位置を選び、「この位置に決定」を押してください。';
+    els.placementSection.style.display='block';
+    els.editorSection.style.display='none';
+  }else{
+    showPinCrosshair(false);
+    pendingRoutePin=false;
+    els.placementSection.style.display='none';
+    els.editorSection.style.display='block';
+  }
+  closePanels();els.pinPanel.classList.add('show');
+}
+function confirmPinPlacement(){
+  if(!placementCoord) placementCoord=map.getCenter().toArray();
+  showPinCrosshair(false);
+  els.placementSection.style.display='none';
+  els.editorSection.style.display='block';
+}
+async function savePin(){
+  let p=editingPinId?pins.find(x=>x.id===editingPinId):null;
+  const wasRoutePin = !p && pendingRoutePin && currentRoute;
+  if(!p){
+    const coord=placementCoord || map.getCenter().toArray();
+    p={id:uid(),coord,photos:[]};
+    pins.push(p);
+  }
+  p.name=els.pinName.value.trim()||'名称未設定';
+  p.memo=els.pinMemo.value;
+  p.date=els.pinDate.value;
+  for(const f of [...els.photoInput.files]) p.photos.push(await dataURL(f));
+  await put('pins',p);
+  addPinMarker(p);
+
+  if(wasRoutePin){
+    currentRoute.items.push({id:uid(),type:'pin',pinId:p.id});
+    renderRouteItems();
+    els.routeCurrent.textContent=`📍 ${p.name} を行程に追加しました。続けて「＋追加」から追加できます。`;
+  }
+  finishPinPlacement();
+  closePanels();
+  editingPinId=null;
+  if(addInProgress){
+    addInProgress=false;
+    els.route.classList.remove('route-adding');
+    if(currentRoute){els.routePanel.classList.add('show');}
+  }
+}
+function openDetail(id){
+  const p=pins.find(x=>x.id===id); if(!p)return;
+  selectedPinId=id;
+  els.detailTitle.textContent='📍 '+p.name;
+  els.detailBody.innerHTML=`<div class="muted">${esc(p.date)}</div><p>${esc(p.memo||'')}</p><div class="photos">${(p.photos||[]).map(s=>`<img src="${s}" alt="">`).join('')}</div>`;
+  els.detailBody.querySelectorAll('img').forEach(img=>img.onclick=()=>openViewer(img.src));
+  closePanels();els.detail.classList.add('show');
+}
+function openViewer(src){els.viewerImg.src=src;els.viewer.classList.add('show');}
+
+els.addPin.onclick=()=>{
+  addInProgress=false;
+  openEditor(null,map.getCenter().toArray(),false);
+};
+els.confirmPlacement.onclick=confirmPinPlacement;
+els.cancelPlacement.onclick=()=>{finishPinPlacement();closePanels(); if(addInProgress){addInProgress=false;els.route.classList.remove('route-adding');if(currentRoute)els.routePanel.classList.add('show');}};
+els.savePin.onclick=savePin;
+els.cancelPin.onclick=()=>{finishPinPlacement();closePanels(); if(addInProgress){addInProgress=false;els.route.classList.remove('route-adding');if(currentRoute)els.routePanel.classList.add('show');}};
+els.closePin.onclick=()=>{finishPinPlacement();closePanels(); if(addInProgress){addInProgress=false;els.route.classList.remove('route-adding');if(currentRoute)els.routePanel.classList.add('show');}};els.closeDetail.onclick=closePanels;
+els.editPin.onclick=()=>{const id=selectedPinId;closePanels();openEditor(id);};
+els.deletePin.onclick=async()=>{
+  if(!selectedPinId||Array.isArray(selectedPinId))return;
+  if(confirm('このピンを削除しますか？')){
+    const p=pins.find(x=>x.id===selectedPinId);
+    if(p?.marker)p.marker.remove();
+    await del('pins',selectedPinId);
+    pins=pins.filter(x=>x.id!==selectedPinId);
+    // remove references from saved routes only if user explicitly deletes? Keep route item, show missing pin.
+    closePanels();
+  }
+};
+els.closeViewer.onclick=()=>els.viewer.classList.remove('show');
+
+function enterRouteMode(){
+  currentRoute={id:uid(),name:'',items:[]};
+  routeMode=true;routePinPick=false;
+  els.routeName.value='';
+  els.routeCurrent.textContent='「＋追加」からピンまたは道筋を追加してください。';
+  renderRouteItems();
+  closePanels();els.routePanel.classList.add('show');
+  renderRouteLines();
+}
+els.route.onclick=enterRouteMode;
+els.closeRoute.onclick=exitRouteMode;
+function exitRouteMode(){
+  stopDrawing();
+  routeMode=false;routePinPick=false;currentRoute=null;addInProgress=false;els.route.classList.remove('route-adding');
+  finishPinPlacement();
+  renderRouteLines();
+  closePanels();
+}
+els.addRoute.onclick=()=>{
+  if(!routeMode)return;
+  // 追加中は下部のルート作成パネルと「旅行のルートを作成」ボタンを隠して、地図を広く使う
+  addInProgress=true;
+  els.route.classList.add('route-adding');
+  els.routePanel.classList.remove('show');
+  els.choice.classList.add('show');
+};
+els.closeChoice.onclick=()=>{
+  els.choice.classList.remove('show');
+  if(addInProgress){addInProgress=false;els.route.classList.remove('route-adding');if(currentRoute)els.routePanel.classList.add('show');}
+};
+
+els.choosePin.onclick=()=>{
+  els.choice.classList.remove('show');
+  routePinPick=true;
+  beginPinPlacement(map.getCenter().toArray(),true);
+  els.routeCurrent.textContent='📍 地図の中央に十字が表示されます。地図をタップして位置を選び、「この位置に決定」を押してください。';
+  openEditor(null,placementCoord,true);
+};
+els.choosePath.onclick=()=>{
+  els.choice.classList.remove('show');
+  chooseModeForPath();
+};
+
+function chooseModeForPath(){
+  const answer=prompt('交通手段を選んでください：\\nwalk = 徒歩\\nbus = バス\\ntrain = 電車\\ncar = 車','walk');
+  const mode=MODE[answer]?answer:'walk';
+  startDrawing(mode);
+}
+
+function addRoutePinAt(coord){
+  openEditor(null,coord,true);
+}
+function renderRouteItems(){
+  const items=currentRoute?.items||[];
+  if(!items.length){els.routeItems.innerHTML='<div class="empty">まだ行程がありません。</div>';return;}
+  els.routeItems.innerHTML=items.map((it,i)=>{
+    if(it.type==='pin'){
+      const p=pins.find(x=>x.id===it.pinId);
+      return `<div class="item" draggable="true" data-i="${i}">
+        <div class="drag-handle">≡</div><div class="grow"><b>${i+1}. 📍 ${esc(p?.name||'ピン')}</b><div class="muted">地点</div></div>
+        <button data-edit="${it.pinId}">✏️</button><button data-remove="${i}">×</button>
+      </div>`;
+    }
+    const m=MODE[it.mode]||MODE.walk;
+    return `<div class="item" draggable="true" data-i="${i}">
+      <div class="drag-handle">≡</div><div class="grow"><b>${i+1}. ${m.icon} ${m.label}</b><div class="muted">道筋 ${it.points.length}点</div></div>
+      <button data-mode="${i}">変更</button><button data-remove="${i}">×</button>
+    </div>`;
+  }).join('');
+
+  els.routeItems.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{
+    currentRoute.items.splice(+b.dataset.remove,1);renderRouteItems();renderRouteLines();
+  });
+  els.routeItems.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEditor(b.dataset.edit));
+  els.routeItems.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{
+    const i=+b.dataset.mode;
+    const answer=prompt('交通手段：walk / bus / train / car',currentRoute.items[i].mode);
+    if(MODE[answer]) currentRoute.items[i].mode=answer;
+    renderRouteItems();renderRouteLines();
+  });
+
+  let dragIndex=null;
+  els.routeItems.querySelectorAll('.item').forEach(el=>{
+    el.addEventListener('dragstart',()=>dragIndex=+el.dataset.i);
+    el.addEventListener('dragover',e=>e.preventDefault());
+    el.addEventListener('drop',()=>{
+      const to=+el.dataset.i;
+      if(dragIndex==null||to===dragIndex)return;
+      const x=currentRoute.items.splice(dragIndex,1)[0];
+      currentRoute.items.splice(to,0,x);
+      dragIndex=null;renderRouteItems();renderRouteLines();
+    });
+  });
+}
+
+function resizeDrawCanvas(){
+  const dpr=devicePixelRatio||1,w=innerWidth,h=innerHeight;
+  els.canvas.width=w*dpr;els.canvas.height=h*dpr;els.canvas.style.width=w+'px';els.canvas.style.height=h+'px';
+  const ctx=els.canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+function screenToLngLat(x,y){
+  const p=map.unproject([x,y]);return [p.lng,p.lat];
+}
+function redrawCanvas(){
+  const ctx=els.canvas.getContext('2d');ctx.clearRect(0,0,innerWidth,innerHeight);
+  if(drawPoints.length<2)return;
+  ctx.strokeStyle=MODE[els.canvas.dataset.mode||'walk'].color;
+  ctx.lineWidth=5;ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.beginPath();
+  drawPoints.forEach((p,i)=>{const s=map.project({lng:p[0],lat:p[1]});if(i===0)ctx.moveTo(s.x,s.y);else ctx.lineTo(s.x,s.y);});
+  ctx.stroke();
+}
+function startDrawing(mode, resume=false){
+  if(!resume){
+    drawPoints=[];
+    drawSegments=[];
+  }
+  drawing=true;
+  drawPaused=false;
+  els.canvas.dataset.mode=mode;
+  els.canvas.classList.add('show');
+  els.banner.classList.add('show');
+  els.canvas.style.pointerEvents='auto';
+  map.dragPan.disable();
+  // Do not change MapLibre's zoom behavior here. The user can press
+  // 描画OFF, then use the normal map controls, and resume later.
+  resizeDrawCanvas();redrawCanvas();
+  els.drawGuide.textContent=`${MODE[mode].icon} ${MODE[mode].label}：描画ON（一本指で続きから描けます）`;
+  els.drawToggle.textContent='⏸ 描画OFF';
+  els.routeCurrent.textContent=`${MODE[mode].icon} ${MODE[mode].label} の道筋を作成中です。ON/OFFを切り替えて続きから描けます。`;
+}
+function pauseDrawing(){
+  if(!drawing)return;
+  if(drawPoints.length>2 && drawSegments.length===0){drawSegments=[drawPoints.slice()];}
+  drawing=false;
+  drawPaused=true;
+  drawPoints=[];
+  els.canvas.classList.remove('show');
+  els.canvas.style.pointerEvents='none';
+  els.banner.classList.add('show');
+  els.drawGuide.textContent='描画OFF：地図を移動・拡大縮小できます。';
+  els.drawToggle.textContent='▶ 描画ON';
+  map.dragPan.enable();
+  redrawCanvas();
+}
+function stopDrawing(){
+  drawing=false;drawPaused=false;drawPoints=[];drawSegments=[];
+  els.canvas.classList.remove('show');els.canvas.style.pointerEvents='none';els.banner.classList.remove('show');
+  const ctx=els.canvas.getContext('2d');ctx.clearRect(0,0,innerWidth,innerHeight);
+  if(map)map.dragPan.enable();
+}
+function finishDrawing(){
+  if(!currentRoute)return;
+  if(drawPoints.length>2){drawSegments.push(drawPoints.slice());}
+  if(drawSegments.length){
+    const allPoints=[];
+    drawSegments.forEach((seg,i)=>{
+      seg.forEach((pt,j)=>{
+        if(i>0 && j===0 && allPoints.length && allPoints[allPoints.length-1][0]===pt[0] && allPoints[allPoints.length-1][1]===pt[1])return;
+        allPoints.push(pt);
+      });
+    });
+    if(allPoints.length>2){
+      const mode=els.canvas.dataset.mode||'walk';
+      currentRoute.items.push({id:uid(),type:'path',mode,points:allPoints});
+      renderRouteItems();renderRouteLines();
+      els.routeCurrent.textContent=`${MODE[mode].icon} ${MODE[mode].label} の道筋を行程に追加しました。`;
+    }
+  }
+  drawPoints=[];drawSegments=[];
+  stopDrawing();
+  restoreRouteAfterAdd('道筋を行程に追加しました。続けて「＋追加」から追加できます。');
+}
+function redrawCanvas(){
+  const ctx=els.canvas.getContext('2d');ctx.clearRect(0,0,innerWidth,innerHeight);
+  const mode=MODE[els.canvas.dataset.mode||'walk'];
+  const drawOne=points=>{
+    if(points.length<2)return;
+    ctx.strokeStyle=mode.color;ctx.lineWidth=5;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();
+    points.forEach((p,i)=>{const s=map.project({lng:p[0],lat:p[1]});if(i===0)ctx.moveTo(s.x,s.y);else ctx.lineTo(s.x,s.y);});ctx.stroke();
+  };
+  drawSegments.forEach(drawOne);drawOne(drawPoints);
+}
+let mouseDown=false;
+els.canvas.addEventListener('touchstart',e=>{
+  if(!drawing||e.touches.length!==1)return;
+  e.preventDefault();const t=e.touches[0];const ll=screenToLngLat(t.clientX,t.clientY);drawPoints=[ll];redrawCanvas();
+},{passive:false});
+els.canvas.addEventListener('touchmove',e=>{
+  if(!drawing||e.touches.length!==1)return;
+  e.preventDefault();const t=e.touches[0];drawPoints.push(screenToLngLat(t.clientX,t.clientY));redrawCanvas();
+},{passive:false});
+els.canvas.addEventListener('touchend',e=>{
+  if(!drawing)return;e.preventDefault();
+  if(drawPoints.length>2){drawSegments.push(drawPoints.slice());drawPoints=[];redrawCanvas();}
+},{passive:false});
+els.canvas.addEventListener('mousedown',e=>{if(!drawing)return;e.preventDefault();mouseDown=true;drawPoints=[screenToLngLat(e.clientX,e.clientY)];redrawCanvas();});
+els.canvas.addEventListener('mousemove',e=>{if(!drawing||!mouseDown)return;drawPoints.push(screenToLngLat(e.clientX,e.clientY));redrawCanvas();});
+els.canvas.addEventListener('mouseup',()=>{if(!drawing)return;mouseDown=false;if(drawPoints.length>2){drawSegments.push(drawPoints.slice());drawPoints=[];redrawCanvas();}});
+els.canvas.addEventListener('mouseleave',()=>{if(drawing&&mouseDown){mouseDown=false;if(drawPoints.length>2){drawSegments.push(drawPoints.slice());drawPoints=[];redrawCanvas();}}});
+addEventListener('resize',()=>{if(drawing||drawPaused){resizeDrawCanvas();redrawCanvas();}});
+
+els.drawToggle.onclick=()=>{
+  if(drawing){pauseDrawing();}
+  else{
+    const mode=els.canvas.dataset.mode||'walk';
+    drawing=true;drawPaused=false;els.canvas.classList.add('show');els.canvas.style.pointerEvents='auto';els.banner.classList.add('show');map.dragPan.disable();resizeDrawCanvas();redrawCanvas();els.drawGuide.textContent=`${MODE[mode].icon} ${MODE[mode].label}：描画ON（一本指で続きから描けます）`;els.drawToggle.textContent='⏸ 描画OFF';
+  }
+};
+els.drawUndo.onclick=()=>{
+  if(drawPoints.length){drawPoints=[];redrawCanvas();return;}
+  if(drawSegments.length){drawSegments.pop();redrawCanvas();}
+};
+els.drawFinish.onclick=finishDrawing;
+els.drawCancel.onclick=()=>{drawPoints=[];drawSegments=[];stopDrawing();restoreRouteAfterAdd('道筋の追加を取り消しました。続けて「＋追加」から追加できます。')};
+
+els.undo.onclick=()=>{
+  if(currentRoute?.items?.length){
+    currentRoute.items.pop();
+    renderRouteItems();renderRouteLines();
+    els.routeCurrent.textContent='一つ前の行程を削除しました。';
+  }
+};
+
+els.saveRoute.onclick=async()=>{
+  if(!currentRoute)return;
+  currentRoute.name=els.routeName.value.trim()||'名称未設定の旅行';
+  await put('routes',currentRoute);
+  routes=await all('routes');
+  renderRouteLines();
+  stopDrawing();routeMode=false;routePinPick=false;currentRoute=null;finishPinPlacement();addInProgress=false;els.route.classList.remove('route-adding');closePanels();
+  alert('旅行ルートを保存しました。通常の地図にも表示されています。');
+};
+
+els.viewRoute.onclick=async()=>{routes=await all('routes');renderRoutesList();els.routesPanel.classList.add('show');};
+els.closeRoutes.onclick=()=>closePanels();
+function renderRoutesList(){
+  els.routesList.innerHTML=routes.length?routes.map(r=>`<div class="item"><div class="grow"><b>📁 ${esc(r.name)}</b><div class="muted">${(r.items||[]).length}項目</div></div><button data-open="${r.id}" class="primary">見る</button><button data-del="${r.id}" class="danger">削除</button></div>`).join(''):'<div class="empty">まだ旅行ルートがありません。</div>';
+  els.routesList.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>showRoute(b.dataset.open));
+  els.routesList.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{
+    if(confirm('この旅行ルートを削除しますか？')){
+      await del('routes',b.dataset.del);routes=await all('routes');renderRouteLines();renderRoutesList();
+    }
+  });
+}
+function showRoute(id){
+  const r=routes.find(x=>x.id===id);if(!r)return;
+  els.routeViewTitle.textContent=r.name;
+  els.routeViewBody.innerHTML=(r.items||[]).map((it,i)=>{
+    if(it.type==='pin'){const p=pins.find(x=>x.id===it.pinId);return `<div class="item"><div>📍</div><div class="grow"><b>${i+1}. ${esc(p?.name||'ピン')}</b><div class="muted">${esc(p?.memo||'')}</div></div></div>`;}
+    const m=MODE[it.mode]||MODE.walk;return `<div class="item"><div>${m.icon}</div><div class="grow"><b>${i+1}. ${m.label}</b><div class="muted">道筋</div></div></div>`;
+  }).join('')||'<div class="empty">行程はありません。</div>';
+  closePanels();els.routeView.classList.add('show');
+}
+els.closeRouteView.onclick=closePanels;
+
+mapInit();
+
+async function mapInit(){
+  try{
+    map=new maplibregl.Map({
+      container:'map',
+      style:'https://tiles.openfreemap.org/styles/liberty',
+      center:[135.76,35.01],
+      zoom:5.2,
+      attributionControl:true
+    });
+    map.addControl(new maplibregl.NavigationControl(),'bottom-right');
+    map.on('load',async()=>{
+      addRouteLayers();
+      try{await openDB();pins=await all('pins');routes=await all('routes');}catch(e){console.warn('DB',e);}
+      renderPins();renderRouteLines();
+    });
+    map.on('move',()=>{if(drawing)redrawCanvas();});
+    map.on('click',e=>{
+      if(routePinPick && !drawing){
+        updatePlacementCoord([e.lngLat.lng,e.lngLat.lat]);
+        routePinPick=false;
+        openEditor(null,placementCoord,true);
+      } else if(pinPlacement && !drawing){
+        updatePlacementCoord([e.lngLat.lng,e.lngLat.lat]);
+      }
+    });
+  }catch(e){console.error(e);}
+}
+})();
+</script>
+</body>
+</html>
